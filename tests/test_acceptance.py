@@ -8,9 +8,10 @@ class AcceptanceTest(unittest.TestCase):
         result = run()
         self.assertEqual("ok", result["status"])
         self.assertTrue(result["audit_valid"])
-        self.assertFalse(result["first_replayed"])
-        self.assertTrue(result["second_replayed"])
-        self.assertEqual(1, result["records"])
+        self.assertTrue(result["replay_replayed"])
+        self.assertEqual(5, result["containers"])
+        self.assertEqual(2, result["conservation_roots"])
+        self.assertTrue(all(result["custody_timeline_events"] >= 1 for _ in [0]))
 
 
 if __name__ == "__main__":

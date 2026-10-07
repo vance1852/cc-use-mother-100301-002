@@ -63,6 +63,114 @@ CREATE TABLE IF NOT EXISTS audit_events (
     event_hash TEXT NOT NULL UNIQUE,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sampling_plans (
+    plan_id TEXT PRIMARY KEY,
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS containers (
+    container_id TEXT PRIMARY KEY,
+    plan_id TEXT REFERENCES sampling_plans(plan_id),
+    site_id TEXT NOT NULL REFERENCES sites(site_id),
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    holder_actor_id TEXT REFERENCES actors(actor_id),
+    holder_location TEXT,
+    seal_id TEXT,
+    sealed_by TEXT,
+    mass_grams REAL,
+    version INTEGER NOT NULL CHECK(version >= 1),
+    temp_excursion INTEGER NOT NULL DEFAULT 0 CHECK(temp_excursion IN (0, 1)),
+    seal_anomaly INTEGER NOT NULL DEFAULT 0 CHECK(seal_anomaly IN (0, 1)),
+    last_device_id TEXT,
+    source_event_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS container_parents (
+    container_id TEXT NOT NULL REFERENCES containers(container_id),
+    parent_id TEXT NOT NULL REFERENCES containers(container_id),
+    event_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    PRIMARY KEY (container_id, parent_id)
+);
+CREATE TABLE IF NOT EXISTS custody_events (
+    event_id TEXT PRIMARY KEY,
+    device_id TEXT,
+    local_sequence INTEGER,
+    event_type TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    expected_version TEXT,
+    occurred_at TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    plan_id TEXT,
+    analysis_id TEXT,
+    adjudication_json TEXT,
+    UNIQUE(device_id, local_sequence)
+);
+CREATE TABLE IF NOT EXISTS custody_event_containers (
+    event_id TEXT NOT NULL,
+    container_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (event_id, container_id, role)
+);
+CREATE TABLE IF NOT EXISTS analyses (
+    analysis_id TEXT PRIMARY KEY,
+    container_id TEXT NOT NULL REFERENCES containers(container_id),
+    method TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    result_hash TEXT NOT NULL,
+    instrument_json TEXT,
+    event_id TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES actors(actor_id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS devices (
+    device_id TEXT PRIMARY KEY,
+    last_seen_at TEXT,
+    last_sequence INTEGER,
+    last_occurred_at TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS device_event_receipts (
+    device_id TEXT NOT NULL,
+    local_sequence INTEGER NOT NULL,
+    request_id TEXT,
+    payload_hash TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    event_id TEXT,
+    case_id TEXT,
+    response_json TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    PRIMARY KEY (device_id, local_sequence)
+);
+CREATE TABLE IF NOT EXISTS quarantine_cases (
+    case_id TEXT PRIMARY KEY,
+    device_id TEXT,
+    local_sequence INTEGER,
+    request_id TEXT,
+    event_type TEXT NOT NULL,
+    envelope_json TEXT NOT NULL,
+    actor_id TEXT,
+    occurred_at TEXT,
+    reason_code TEXT NOT NULL,
+    reason_detail TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'accepted', 'rejected')),
+    created_event_id TEXT,
+    decided_by TEXT REFERENCES actors(actor_id),
+    decided_at TEXT,
+    decision_note TEXT,
+    applied_event_id TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quarantine_device_sequence
+    ON quarantine_cases(device_id, local_sequence);
 """
 
 

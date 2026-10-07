@@ -9,18 +9,22 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .errors import DomainError, ValidationError
+from .custody import CustodyService
 from .service import DomainService
 from .storage import Database
 
 
 def route(service: DomainService, method: str, path: str, body: dict[str, Any] | None,
-          headers: dict[str, str] | None = None) -> tuple[int, dict[str, Any]]:
+          headers: dict[str, str] | None = None, custody: CustodyService | None = None
+          ) -> tuple[int, dict[str, Any]]:
     """把一个 HTTP 语义请求分派到领域服务。"""
 
     headers = headers or {}
     body = body or {}
+    custody = custody or CustodyService(service.database, service.clock)
     parsed = urlparse(path)
     actor_id = headers.get("X-Actor-Id", "")
+    request_id = headers.get("X-Request-Id", "")
     try:
         if method == "GET" and parsed.path == "/health":
             valid, count = service.verify_audit()
@@ -48,6 +52,61 @@ def route(service: DomainService, method: str, path: str, body: dict[str, Any] |
             query = parse_qs(parsed.query)
             after = int(query.get("after_sequence", ["0"])[0])
             return 200, {"items": service.audit_events(after)}
+
+        # ------------------------------------------------ 样品监管链
+        if method == "POST" and parsed.path == "/sampling-plans":
+            receipt = custody.create_sampling_plan(actor_id=actor_id, request_id=request_id, **body)
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "POST" and parsed.path == "/custody-events":
+            result = custody.submit_event(body, request_id=request_id or None)
+            return 200, {
+                "accepted": result.accepted, "replayed": result.replayed,
+                "event_id": result.event_id, "case_id": result.case_id,
+                "reason_code": result.reason_code, "reason_detail": result.reason_detail,
+            }
+        if method == "GET" and parsed.path == "/containers":
+            query = parse_qs(parsed.query)
+            items = custody.list_containers(
+                plan_id=query.get("plan_id", [None])[0],
+                site_id=query.get("site_id", [None])[0],
+                status=query.get("status", [None])[0])
+            return 200, {"items": [item.__dict__ for item in items]}
+        if method == "GET" and parsed.path.startswith("/containers/"):
+            cid = parsed.path.rsplit("/", 1)[-1]
+            if parsed.path.endswith("/lineage"):
+                cid = parsed.path.split("/")[-2]
+                return 200, custody.lineage(cid)
+            if parsed.path.endswith("/events"):
+                cid = parsed.path.split("/")[-2]
+                return 200, {"items": [e.__dict__ for e in custody.list_events(cid)]}
+            return 200, custody.get_container(cid).__dict__
+        if method == "GET" and parsed.path.startswith("/analyses/"):
+            aid = parsed.path.split("/")[-1]
+            if parsed.path.endswith("/provenance"):
+                aid = parsed.path.split("/")[-2]
+                return 200, custody.analysis_provenance(aid)
+            return 200, custody.get_analysis(aid).__dict__
+        if method == "GET" and parsed.path == "/quarantine-cases":
+            query = parse_qs(parsed.query)
+            status = query.get("status", [None])[0]
+            return 200, {"items": [item.__dict__ for item in custody.list_quarantine(status)]}
+        if method == "POST" and parsed.path.startswith("/quarantine-cases/") \
+                and parsed.path.endswith("/adjudication"):
+            case_id = parsed.path.split("/")[-2]
+            receipt = custody.adjudicate_case(
+                actor_id=actor_id, request_id=request_id, case_id=case_id,
+                decision=body["decision"], note=body.get("note"))
+            return 200 if receipt.replayed else 201, receipt.__dict__
+        if method == "GET" and parsed.path == "/alerts":
+            query = parse_qs(parsed.query)
+            cutoff = query.get("before", [None])[0]
+            if not cutoff:
+                raise ValidationError("查询参数 before 不能为空（ISO8601）")
+            return 200, custody.list_alerts(offline_before=cutoff)
+        if method == "GET" and parsed.path == "/conservation-report":
+            query = parse_qs(parsed.query)
+            return 200, {"items": custody.conservation_report(
+                query.get("plan_id", [None])[0])}
         return 404, {"error": "route_not_found", "message": "接口不存在"}
     except DomainError as exc:
         return exc.status, {"error": exc.code, "message": str(exc)}
@@ -69,7 +128,8 @@ class Handler(BaseHTTPRequestHandler):
             self._write(400, {"error": "invalid_json", "message": "请求体必须是 UTF-8 JSON"})
             return
         status, payload = route(self.service, self.command, self.path, body,
-                                {"X-Actor-Id": self.headers.get("X-Actor-Id", "")})
+                                {"X-Actor-Id": self.headers.get("X-Actor-Id", ""),
+                                 "X-Request-Id": self.headers.get("X-Request-Id", "")})
         self._write(status, payload)
 
     def _write(self, status: int, payload: dict[str, Any]) -> None:
